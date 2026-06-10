@@ -8,11 +8,9 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.readers.file import PyMuPDFReader
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
 
-# ==========================================
 # 1. 환경 변수 로드 (.env 파일 읽기)
 load_dotenv() # .env 파일에 있는 GOOGLE_API_KEY를 자동으로 시스템 환경변수로 불러옵니다.
 
-# ==========================================
 # 2. 페이지 설정 및 UI 초기화
 st.set_page_config(page_title="소설 AI", page_icon="📖", layout="wide")
 st.title("📖 소설 Q&A 봇")
@@ -25,7 +23,6 @@ if "messages" not in st.session_state:
 if "total_pages" not in st.session_state:
     st.session_state.total_pages = 0
 
-# ==========================================
 # 3. 사이드바: 설정 및 파일 업로드
 with st.sidebar:
     st.header("⚙️ 소설 설정 ")
@@ -87,7 +84,6 @@ with st.sidebar:
             st.error(f"오류: 입력한 페이지({current_page}p)가 문서의 총 페이지({st.session_state.total_pages}p)보다 큽니다. 올바른 숫자를 입력해주세요.")
             page_error = True
 
-# ==========================================
 # 4. 메인 화면: 채팅 인터페이스
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
