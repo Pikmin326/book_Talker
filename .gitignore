@@ -1,3 +1,6 @@
 .env
 /.conda
 /document
+test.py
+/storage_local_smart_index
+/.vscode
