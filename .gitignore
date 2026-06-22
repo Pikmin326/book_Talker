@@ -2,5 +2,6 @@
 /.conda
 /document
 test.py
-/storage_local_context_line
+/storage_novel_strict_rag
+
 /.vscode
