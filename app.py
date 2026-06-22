@@ -1,11 +1,14 @@
 import os
 import streamlit as st
 import fitz  # PyMuPDF
+from typing import List
 from dotenv import load_dotenv
+
 from llama_index.core import VectorStoreIndex, Settings, StorageContext, load_index_from_storage
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.core.schema import Document
 from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterOperator
+from llama_index.core.node_parser import SentenceSplitter
 
 # 1. 환경 변수 로드 (.env 파일 읽기)
 load_dotenv(override=True) 
@@ -19,6 +22,10 @@ if "index" not in st.session_state:
     st.session_state.index = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "volume_to_max_pages" not in st.session_state:
+    st.session_state.volume_to_max_pages = {}
+if "page_to_max_lines" not in st.session_state:
+    st.session_state.page_to_max_lines = {}
 
 # --- 로컬 임베딩 모델 캐싱 ---
 @st.cache_resource(show_spinner=False)
@@ -31,34 +38,25 @@ with st.sidebar:
     st.header("⚙️ 소설 설정 ")
     
     uploaded_files = st.file_uploader("소설 PDF 다중 업로드", type=["pdf"], accept_multiple_files=True)
-    
-    if "last_file_names" not in st.session_state:
-        st.session_state.last_file_names = []
-    if "volume_to_max_pages" not in st.session_state:
-        st.session_state.volume_to_max_pages = {} # 권별 최대 페이지 저장용
-    if "page_to_max_lines" not in st.session_state:
-        st.session_state.page_to_max_lines = {} # 페이지별 최대 줄 수
 
     if uploaded_files:
         uploaded_files = sorted(uploaded_files, key=lambda x: x.name)
         current_file_names = [f.name for f in uploaded_files]
         
-        # 파일이 변경되면 인덱스 초기화 후 새로고침
-        if current_file_names != st.session_state.last_file_names:
+        if "last_file_names" not in st.session_state or current_file_names != st.session_state.last_file_names:
             st.session_state.index = None
             st.session_state.last_file_names = current_file_names
             st.session_state.volume_to_max_pages = {}
             st.session_state.page_to_max_lines = {}
             st.rerun() 
             
-    # 권 별 최대 페이지 수 계산 (가장 먼저 실행)
+    # 권 별 최대 페이지 수 계산 
     if uploaded_files and not st.session_state.volume_to_max_pages:
         with st.spinner("문서 구조를 빠르게 스캔 중입니다..."):
             for idx, uploaded_file in enumerate(uploaded_files):
                 vol_num = idx + 1
                 doc_pdf = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
                 st.session_state.volume_to_max_pages[vol_num] = len(doc_pdf)
-                
                 st.session_state.page_to_max_lines[vol_num] = {}
                 
                 for page_idx, page in enumerate(doc_pdf):
@@ -86,8 +84,9 @@ with st.sidebar:
         
         with st.spinner("로컬 임베딩 모델을 로드 중입니다... (최초 1회 다운로드)"):
             Settings.embed_model = load_local_embedding_model()
+            node_parser = SentenceSplitter(chunk_size=350, chunk_overlap=30)
 
-        PERSIST_DIR = "./storage_local_smart_index"
+        PERSIST_DIR = "./storage_local_context_line"
         
         # 이미 저장된 인덱스가 존재하는지 확인
         if os.path.exists(PERSIST_DIR):
@@ -97,7 +96,7 @@ with st.sidebar:
                 st.success("저장된 로컬 인덱스 로드 완료!")
         else:
             with st.spinner("PDF 파일을 줄(Line) 단위로 분석하는 중입니다... (최초 1회)"):
-                all_documents = []
+                all_raw_documents = []
                 
                 # 파일별로 권, 페이지, 줄 번호를 추출하여 메타데이터에 입력
                 for idx, uploaded_file in enumerate(uploaded_files):
@@ -120,36 +119,40 @@ with st.sidebar:
                                 if len(line_text) < 2: # 의미 없는 짧은 기호/공백 제외
                                     continue
                                 
-                                # 권, 페이지, 줄 조건을 단일 숫자로 반환
-                                read_index_val = (vol_num * 100000000) + (page_num * 10000) + line_counter
-                                
                                 doc = Document(
                                     text=line_text,
                                     metadata={
-                                        "file_name": uploaded_file.name,
                                         "volume": vol_num,
                                         "page": page_num,
-                                        "line": line_counter,
-                                        "read_index": read_index_val
+                                        "line": line_counter
                                     }
                                 )
-                                all_documents.append(doc)
+                                all_raw_documents.append(doc)
                                 line_counter += 1
                     doc_pdf.close()
+
+                nodes = node_parser.get_nodes_from_documents(all_raw_documents)
+
+                for node in nodes:
+                    v = node.metadata.get("volume", 1)
+                    p = node.metadata.get("page", 1)
+                    l = node.metadata.get("line", 1) # 이 단락이 시작되는 줄 번호
+                    
+                    # 단락의 시작 줄 번호를 기반으로 고유 검색 주소 계산
+                    node.metadata["read_index"] = (v * 100000000) + (p * 10000) + l
             
             # --- 진행률 표시와 함께 순차적 임베딩 시작 ---
             st.session_state.index = VectorStoreIndex([]) 
             
-            progress_text = "줄 단위 데이터 인덱싱 중..."
+            progress_text = "맥락 인덱싱 중..."
             progress_bar = st.progress(0.0, text=progress_text)
             
             batch_size = 100  # 짧은 문장들이므로 배치 사이즈를 늘려 처리 속도 향상
-            total_nodes = len(all_documents)
+            total_nodes = len(nodes)
             
             for i in range(0, total_nodes, batch_size):
-                batch = all_documents[i : i + batch_size]
+                batch = nodes[i : i + batch_size]
                 st.session_state.index.insert_nodes(batch)
-                
                 progress = min((i + batch_size) / total_nodes, 1.0)
                 progress_bar.progress(progress, text=f"{progress_text} ({min(i + batch_size, total_nodes)} / {total_nodes} 완료)")
             
@@ -227,11 +230,22 @@ if prompt := st.chat_input("소설 내용에 대해 질문해 보세요!"):
                     similarity_top_k=5 # 이미 스포일러가 제거된 안전한 문서 중에서만 검색하므로 기본값 유지 가능
                 )
                 
-                response = query_engine.query(prompt)
-                
-                if not str(response).strip() or str(response) == "Empty Response":
-                    st.markdown("현재까지 읽으신 분량 내에서는 해당 질문에 대한 내용을 찾을 수 없습니다.")
-                else:
-                    st.markdown(response.response)
-                
-        st.session_state.messages.append({"role": "assistant", "content": response.response})
+                try:
+                    response = query_engine.query(prompt)
+                    
+                    if not str(response).strip() or str(response) == "Empty Response":
+                        bot_reply = "현재까지 읽으신 분량 내에서는 해당 질문에 대한 내용을 찾을 수 없습니다."
+                        st.markdown(bot_reply)
+                        st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                    else:
+                        st.markdown(response.response)
+                        st.session_state.messages.append({"role": "assistant", "content": response.response})
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    if "503" in error_msg or "UNAVAILABLE" in error_msg:
+                        st.error("🚨 구글 AI 서버에 일시적인 트래픽 과부하가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+                    elif "429" in error_msg or "Quota" in error_msg:
+                        st.error("🚨 구글 API 무료 할당량을 초과했습니다. 잠시 후 다시 시도해 주세요.")
+                    else:
+                        st.error(f"예기치 못한 오류가 발생했습니다: {error_msg}")

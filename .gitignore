@@ -2,5 +2,5 @@
 /.conda
 /document
 test.py
-/storage_local_smart_index
+/storage_local_context_line
 /.vscode
