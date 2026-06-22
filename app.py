@@ -2,6 +2,7 @@ import os
 import json
 import streamlit as st
 import fitz  # PyMuPDF
+import shutil
 from dotenv import load_dotenv
 
 from llama_index.core import VectorStoreIndex, Settings, StorageContext, load_index_from_storage
@@ -36,6 +37,10 @@ with st.sidebar:
     
     uploaded_files = st.file_uploader("소설 PDF 다중 업로드", type=["pdf"], accept_multiple_files=True)
 
+    # 새로운 컨텍스트 방식 전용 저장소
+    PERSIST_DIR = "./storage_novel_strict_rag"
+    LINES_DB_PATH = os.path.join(PERSIST_DIR, "all_lines_db.json")
+
     if uploaded_files:
         uploaded_files = sorted(uploaded_files, key=lambda x: x.name)
         current_file_names = [f.name for f in uploaded_files]
@@ -44,17 +49,17 @@ with st.sidebar:
             st.session_state.index = None
             st.session_state.last_file_names = current_file_names
             st.session_state.all_lines = []
-            st.rerun() 
+            
+            if os.path.exists(PERSIST_DIR):
+                shutil.rmtree(PERSIST_DIR)
+                
+            st.rerun()
     
     if uploaded_files and st.session_state.index is None:
         Settings.llm = GoogleGenAI(model="gemini-2.5-flash", temperature=0.1)
         
         with st.spinner("로컬 임베딩 모델을 로드 중입니다..."):
             Settings.embed_model = load_local_embedding_model()
-
-        # 새로운 컨텍스트 방식 전용 저장소
-        PERSIST_DIR = "./storage_novel_strict_rag"
-        LINES_DB_PATH = os.path.join(PERSIST_DIR, "all_lines_db.json")
         
         if os.path.exists(PERSIST_DIR) and os.path.exists(LINES_DB_PATH):
             with st.spinner("저장된 인덱스와 문맥 DB를 불러오는 중입니다..."):
